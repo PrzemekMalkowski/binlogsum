@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>binlogsum</title>
+<style>
+  :root{
+    --bg:#0c1018; --panel:#111724; --panel2:#0e1420; --line:#1e2a3d;
+    --ink:#dbe5f2; --mute:#7d8aa3; --faint:#4a5670;
+    --cyan:#39d0d8; --violet:#9d7bff; --green:#5fd38d; --amber:#f0c454; --red:#f0697a;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    font-size:14px;line-height:1.5}
+  .wrap{max-width:1400px;margin:0 auto;padding:26px 22px 60px}
+
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+    padding-bottom:14px;border-bottom:1px solid var(--line)}
+  .logo{font-family:var(--mono);font-weight:700;font-size:19px;letter-spacing:.5px}
+  .logo b{color:var(--cyan)}
+  .ver{font-family:var(--mono);font-size:12px;color:var(--faint);
+    border:1px solid var(--line);border-radius:4px;padding:1px 6px}
+  .src{font-family:var(--mono);font-size:12px;color:var(--mute);margin-left:auto}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+    gap:1px;background:var(--line);border:1px solid var(--line);
+    border-radius:10px;overflow:hidden;margin:20px 0}
+  .stat{background:var(--panel);padding:12px 14px}
+  .stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--mute)}
+  .stat .v{font-family:var(--mono);font-size:16px;margin-top:3px;word-break:break-word}
+  .stat .v small{color:var(--mute);font-size:12px}
+
+  .meta{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    overflow:hidden;margin:20px 0 10px;position:relative}
+  .snap-btn{position:absolute;top:10px;right:12px;z-index:2;text-decoration:none;
+    font-family:var(--mono);font-size:12px;color:var(--cyan);background:var(--panel2);
+    border:1px solid var(--line);border-radius:7px;padding:6px 12px}
+  .snap-btn:hover{color:var(--ink);border-color:var(--cyan)}
+  .meta .row{display:flex;gap:18px;padding:11px 16px;border-bottom:1px solid var(--line)}
+  .meta .row:last-child{border-bottom:0}
+  .meta .k{flex:0 0 130px;font-size:11px;text-transform:uppercase;letter-spacing:.7px;
+    color:var(--mute);padding-top:3px}
+  .meta .v{font-family:var(--mono);font-size:14px;color:var(--ink);
+    word-break:break-all;line-height:1.55}
+  .meta .v small{color:var(--mute)}
+  .meta .v .arrow{color:var(--faint)}
+
+  .cards{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:18px;margin-bottom:18px}
+  @media(max-width:780px){.cards{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px 18px;min-width:0}
+  .card-title{font-family:var(--mono);font-size:13px;color:var(--mute);
+    text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px}
+  .card-scroll{max-height:280px;overflow:auto;margin:0 -18px -16px}
+  .etype{display:grid;grid-template-columns:72px 1fr auto;align-items:center;gap:12px;
+    margin:7px 0;font-family:var(--mono);font-size:12.5px}
+  .etype .lbl{color:var(--mute)}
+  .etype .bar{height:8px;border-radius:3px;background:var(--panel2);overflow:hidden}
+  .etype .bar i{display:block;height:100%;border-radius:3px}
+  .etype .cnt{text-align:right;color:var(--ink);min-width:60px}
+  .tname{word-break:break-all;color:var(--ink)}
+
+  .scope{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px 18px;margin-bottom:18px}
+  .scope-head{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}
+  .scope-title{font-family:var(--mono);font-size:13px;color:var(--mute);
+    text-transform:uppercase;letter-spacing:.8px}
+  .toggle{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .toggle button{background:transparent;border:0;color:var(--mute);
+    font-family:var(--mono);font-size:12px;padding:5px 12px;cursor:pointer}
+  .toggle button.on{background:var(--panel2);color:var(--ink)}
+  .toggle button.rows.on{color:var(--green)}
+  .toggle button.bytes.on{color:var(--violet)}
+  .hint{margin-left:auto;font-size:12px;color:var(--faint)}
+  .reset{background:transparent;border:1px solid var(--line);color:var(--mute);
+    font-family:var(--mono);font-size:12px;border-radius:7px;padding:5px 10px;cursor:pointer}
+  .reset:hover{color:var(--ink);border-color:var(--cyan)}
+  canvas{display:block;width:100%;height:300px;cursor:crosshair;touch-action:none}
+  .range{font-family:var(--mono);font-size:12px;color:var(--mute);margin-top:8px}
+  .range b{color:var(--cyan)}
+
+  .legend{display:flex;gap:16px;margin-top:8px;font-size:12px;color:var(--mute);
+    font-family:var(--mono)}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;
+    vertical-align:middle}
+
+  .tbl-wrap{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    overflow:hidden}
+  .tbl-head{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
+  .tbl-head .t{font-family:var(--mono);font-size:13px;color:var(--mute);
+    text-transform:uppercase;letter-spacing:.8px}
+  .tbl-head .c{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--cyan)}
+  table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+  thead th{position:sticky;top:0;background:var(--panel2);color:var(--mute);
+    text-align:left;font-weight:500;padding:8px 16px;border-bottom:1px solid var(--line);
+    font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  thead th[data-sort]{cursor:pointer;user-select:none;white-space:nowrap}
+  thead th[data-sort]:hover{color:var(--ink)}
+  thead th.sorted{color:var(--cyan)}
+  .ddl-tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;
+    background:rgba(157,123,255,.16);color:var(--violet);border:1px solid rgba(157,123,255,.35)}
+  tbody td{padding:7px 16px;border-bottom:1px solid var(--panel2);white-space:nowrap}
+  tbody tr:hover{background:var(--panel2)}
+  tbody tr{cursor:pointer}
+  td.num{text-align:right}
+  .pill{padding:0 6px;border-radius:4px}
+  .ins{color:var(--green)} .upd{color:var(--amber)} .del{color:var(--red)}
+  .tables{color:var(--mute);max-width:340px;overflow:hidden;text-overflow:ellipsis}
+  .gtid{color:var(--faint)}
+  .scroll{max-height:840px;overflow:auto}
+  .empty{padding:28px 16px;color:var(--faint);text-align:center;font-family:var(--mono)}
+
+  .modal{display:none;position:fixed;inset:0;z-index:20;background:rgba(4,7,14,.66);
+    align-items:center;justify-content:center;padding:24px}
+  .modal-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    width:min(560px,94vw);max-height:86vh;display:flex;flex-direction:column;
+    box-shadow:0 24px 60px rgba(0,0,0,.6)}
+  .modal-head{display:flex;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)}
+  .modal-title{font-family:var(--mono);font-size:13px;color:var(--mute);
+    text-transform:uppercase;letter-spacing:.8px}
+  .modal-close{margin-left:auto;background:transparent;border:0;color:var(--mute);
+    font-size:16px;cursor:pointer;line-height:1;padding:2px 4px}
+  .modal-close:hover{color:var(--ink)}
+  .modal-body{padding:16px 18px;overflow:auto}
+  .mgrid{display:grid;grid-template-columns:120px 1fr;gap:8px 16px;align-items:baseline}
+  .mk{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mute)}
+  .mv{font-family:var(--mono);font-size:13px;color:var(--ink);word-break:break-all}
+  .tlist{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:1px;
+    border:1px solid var(--line);border-radius:8px;overflow:hidden;max-height:40vh;overflow-y:auto}
+  .tlist li{font-family:var(--mono);font-size:13px;color:var(--ink);padding:7px 12px;
+    background:var(--panel2);border-bottom:1px solid var(--line);word-break:break-all}
+  .tlist li:last-child{border-bottom:0}
+  .tlist li:nth-child(odd){background:var(--bg)}
+
+  .tip{position:fixed;pointer-events:none;background:#060a12;border:1px solid var(--line);
+    border-radius:8px;padding:9px 11px;font-family:var(--mono);font-size:12px;
+    color:var(--ink);box-shadow:0 8px 24px rgba(0,0,0,.5);opacity:0;transition:opacity .08s;z-index:10}
+  .tip .ts{color:var(--cyan);margin-bottom:4px}
+  .tip .ln{color:var(--mute)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="logo">🐬 <b>binlog</b>sum 🦭</span>
+    <span class="ver" id="ver">v0.0.0</span>
+    <span class="src" id="src"></span>
+  </header>
+
+  <section class="meta" id="meta">
+    <a class="snap-btn" id="snap" href="snapshot" download="binlogsum-snapshot.html">⬇ Download snapshot</a>
+    <div id="metaRows"></div>
+  </section>
+  <section class="stats" id="stats"></section>
+
+  <section class="cards">
+    <div class="card">
+      <div class="card-title">events by type</div>
+      <div id="byType"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">most-updated tables</div>
+      <div class="card-scroll">
+        <table>
+          <thead><tr>
+            <th data-sort="table">table</th>
+            <th class="num" data-sort="ins">ins</th><th class="num" data-sort="upd">upd</th>
+            <th class="num" data-sort="del">del</th><th class="num" data-sort="ddl">ddl</th>
+          </tr></thead>
+          <tbody id="tblBody"></tbody>
+        </table>
+        <div class="empty" id="tblEmpty" style="display:none">no table activity</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="scope">
+    <div class="scope-head">
+      <span class="scope-title">writes over time</span>
+      <div class="toggle">
+        <button class="rows on" id="mRows">rows</button>
+        <button class="bytes" id="mBytes">size</button>
+      </div>
+      <span class="hint">drag to zoom · double-click to reset</span>
+      <button class="reset" id="reset">reset</button>
+    </div>
+    <canvas id="chart"></canvas>
+    <div class="legend" id="legend">
+      <span><i style="background:var(--green)"></i>insert</span>
+      <span><i style="background:var(--amber)"></i>update</span>
+      <span><i style="background:var(--red)"></i>delete</span>
+    </div>
+    <div class="range" id="range"></div>
+  </section>
+
+  <section class="tbl-wrap">
+    <div class="tbl-head">
+      <span class="t">transactions in view</span>
+      <span class="c" id="txnCount">0</span>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th data-sort="time">start</th>
+          <th data-sort="server">server</th>
+          <th data-sort="id">gtid / xid</th>
+          <th class="num" data-sort="ins">ins</th>
+          <th class="num" data-sort="upd">upd</th>
+          <th class="num" data-sort="del">del</th>
+          <th data-sort="ddl">ddl</th>
+          <th class="num" data-sort="size">size</th>
+          <th data-sort="tables">tables</th>
+        </tr></thead>
+        <tbody id="txnBody"></tbody>
+      </table>
+      <div class="empty" id="empty" style="display:none">no transactions in this range</div>
+    </div>
+  </section>
+</div>
+<div class="tip" id="tip"></div>
+
+<div class="modal" id="modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <span class="modal-title">transaction detail</span>
+      <button class="modal-close" id="modalClose" aria-label="close">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<script>
+const BUCKETS = 80;
+const SNAPSHOT = null; /*BINLOGSUM_SNAPSHOT*/
+let DATA = null, txns = [], mode = "rows";
+let txnByIndex = {};
+let viewMin = null, viewMax = null;     // current zoom window (ms)
+let fullMin = null, fullMax = null;     // whole-log window (ms)
+let layout = [];                        // per-bar pixel geometry for hit-testing
+
+const $ = s => document.querySelector(s);
+const fmtInt = n => n.toLocaleString("en-US");
+function fmtBytes(b){
+  if(b < 1024) return b + " B";
+  const u=["KiB","MiB","GiB","TiB"]; let i=-1;
+  do{ b/=1024; i++; }while(b>=1024 && i<u.length-1);
+  return b.toFixed(1)+" "+u[i];
+}
+function fmtTime(ms){
+  const d=new Date(ms);
+  const p=n=>String(n).padStart(2,"0");
+  return p(d.getUTCHours())+":"+p(d.getUTCMinutes())+":"+p(d.getUTCSeconds());
+}
+function fmtDateTime(ms){
+  const d=new Date(ms), p=n=>String(n).padStart(2,"0");
+  return d.getUTCFullYear()+"-"+p(d.getUTCMonth()+1)+"-"+p(d.getUTCDate())+" "+fmtTime(ms);
+}
+function snapshotName(src){
+  if(!src) return "binlogsum-snapshot.html";
+  let base = src.split(/[\\/]/).pop();          // strip any directory path
+  if(!base || base==="stdin") return "binlogsum-snapshot.html";
+  base = base.replace(/\.(sql|log|txt)$/i, ""); // drop a decoded-log extension
+  return base + ".html";
+}
+
+async function load(){
+  if (SNAPSHOT) {
+    DATA = SNAPSHOT;
+    const s = $("#snap"); if (s) s.style.display = "none";
+  } else {
+    const r = await fetch("api/summary");
+    DATA = await r.json();
+  }
+  $("#ver").textContent = "v"+DATA.tool_version;
+  $("#src").textContent = DATA.source;
+  const snap = $("#snap");
+  if (snap) snap.download = snapshotName(DATA.source);
+
+  txns = (DATA.transactions||[]).map(t => ({
+    ...t, t0: Date.parse(t.start_time)
+  })).filter(t => !isNaN(t.t0)).sort((a,b)=>a.t0-b.t0);
+
+  txnByIndex = {};
+  for(const t of txns) txnByIndex[t.index] = t;
+
+  if(DATA.has_time){
+    fullMin = Date.parse(DATA.first_time);
+    fullMax = Date.parse(DATA.last_time);
+  } else if(txns.length){
+    fullMin = txns[0].t0; fullMax = txns[txns.length-1].t0;
+  } else { fullMin = 0; fullMax = 1; }
+  if(fullMax <= fullMin) fullMax = fullMin + 1000;
+  viewMin = fullMin; viewMax = fullMax;
+
+  renderStats();
+  renderEvents();
+  renderTables();
+  draw(); renderTable();
+}
+
+function renderEvents(){
+  const q=DATA.query_counts||{};
+  const order=["INSERT","UPDATE","DELETE","CREATE","ALTER","DROP","TRUNCATE","RENAME"];
+  const colors={INSERT:"#5fd38d",UPDATE:"#f0c454",DELETE:"#f0697a"};
+  const ddl="#9d7bff";
+  let max=0; for(const k of order) if((q[k]||0)>max) max=q[k];
+  if(max<=0) max=1;
+  const rows=[];
+  for(const k of order){
+    if(!q[k]) continue;
+    const col=colors[k]||ddl;
+    const w=Math.max(2,Math.round(q[k]/max*100));
+    rows.push(`<div class="etype"><span class="lbl">${k.toLowerCase()}</span>`+
+      `<span class="bar"><i style="width:${w}%;background:${col}"></i></span>`+
+      `<span class="cnt">${fmtInt(q[k])}</span></div>`);
+  }
+  $("#byType").innerHTML = rows.join("") || `<div class="empty">no events</div>`;
+}
+
+const TBL_ACC = {
+  table: x => x.table || "",
+  ins:   x => x.inserted || 0,
+  upd:   x => x.updated || 0,
+  del:   x => x.deleted || 0,
+  ddl:   x => x.ddl || 0,
+};
+let tblSortKey = null, tblSortDir = -1;   // null = server order (rows changed desc)
+
+function renderTables(){
+  const tbls=(DATA.tables||[]).slice();
+  const body=$("#tblBody"), empty=$("#tblEmpty");
+  if(!tbls.length){ body.innerHTML=""; empty.style.display="block"; updateTblSortIndicators(); return; }
+  empty.style.display="none";
+
+  if(tblSortKey){
+    const acc=TBL_ACC[tblSortKey];
+    tbls.sort((a,b)=>{
+      const x=acc(a), y=acc(b);
+      let c=(typeof x==="number"&&typeof y==="number")?x-y:String(x).localeCompare(String(y));
+      if(c===0) c=(b.inserted+b.updated+b.deleted)-(a.inserted+a.updated+a.deleted);
+      return c*tblSortDir;
+    });
+  }
+
+  const cell=(v,cls)=> v ? `<td class="num ${cls||""}">${fmtInt(v)}</td>` : `<td class="num"></td>`;
+  body.innerHTML = tbls.map(x=>`<tr>
+    <td class="tname" title="${x.table}">${x.table}</td>
+    ${cell(x.inserted,"ins")}${cell(x.updated,"upd")}${cell(x.deleted,"del")}${cell(x.ddl)}
+  </tr>`).join("");
+  updateTblSortIndicators();
+}
+
+function updateTblSortIndicators(){
+  document.querySelectorAll(".cards thead th[data-sort]").forEach(th=>{
+    const base = th.textContent.replace(/[ \u25B2\u25BC]+$/,"");
+    th.textContent = base + (th.dataset.sort===tblSortKey ? (tblSortDir>0?" \u25B2":" \u25BC") : "");
+    th.classList.toggle("sorted", th.dataset.sort===tblSortKey);
+  });
+}
+
+document.querySelectorAll(".cards thead th[data-sort]").forEach(th=>{
+  th.addEventListener("click", ()=>{
+    const k=th.dataset.sort;
+    if(tblSortKey===k){ tblSortDir=-tblSortDir; }
+    else { tblSortKey=k; tblSortDir = (k==="table") ? 1 : -1; } // text asc, numbers desc
+    renderTables();
+  });
+});
+
+function stat(k,v,sub){
+  return `<div class="stat"><div class="k">${k}</div>
+    <div class="v">${v}${sub?` <small>${sub}</small>`:""}</div></div>`;
+}
+function metaRow(k,v){
+  return `<div class="row"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+}
+function renderStats(){
+  const d=DATA, q=d.query_counts||{};
+  const sids=Object.entries(d.server_ids||{})
+    .map(([id,c])=>`${id} <small>(${fmtInt(c)})</small>`).join("&nbsp;&nbsp;&nbsp;");
+  let totalRows=0,totalBytes=0;
+  for(const t of txns){ totalRows+=(t.inserted+t.updated+t.deleted);
+    if(t.size_known) totalBytes+=t.size_bytes; }
+  const arrow=`<span class="arrow">→</span>`;
+  const gtid = d.gtid_first ?
+    (d.gtid_last && d.gtid_last!==d.gtid_first ? d.gtid_first+" "+arrow+" "+d.gtid_last : d.gtid_first) : "n/a";
+  const xid = d.has_xid ? d.xid_min+" "+arrow+" "+d.xid_max : "n/a";
+  const span = d.has_time ? fmtDateTime(fullMin)+" "+arrow+" "+fmtDateTime(fullMax) : "n/a";
+
+  // Long string-valued details go in full-width rows.
+  $("#metaRows").innerHTML = [
+    metaRow("time frame", span),
+    metaRow("server", `${d.flavor} ${d.server_version||""}`),
+    metaRow("server ids", sids||"n/a"),
+    metaRow("gtid range", gtid),
+    metaRow("xid range", xid),
+  ].join("");
+
+  // Numeric metrics stay in compact boxes.
+  const boxes = [
+    stat("events", fmtInt(d.total_events)),
+    stat("transactions", fmtInt(txns.length)),
+    stat("rows changed", fmtInt(totalRows)),
+    stat("row-image size", totalBytes?fmtBytes(totalBytes):"n/a"),
+    stat("inserts", fmtInt(q.INSERT||0)),
+    stat("updates", fmtInt(q.UPDATE||0)),
+    stat("deletes", fmtInt(q.DELETE||0)),
+  ];
+  // DDL statement counts (only those that actually occur).
+  for(const k of ["CREATE","ALTER","DROP","TRUNCATE","RENAME"]){
+    if(q[k]) boxes.push(stat(k.toLowerCase(), fmtInt(q[k])));
+  }
+  $("#stats").innerHTML = boxes.join("");
+}
+
+function bucketize(min,max,n){
+  const out=[]; const step=(max-min)/n;
+  for(let i=0;i<n;i++) out.push({s:min+i*step,e:min+(i+1)*step,
+    ins:0,upd:0,del:0,bytes:0,txns:0});
+  for(const t of txns){
+    if(t.t0<min||t.t0>max) continue;
+    let idx=Math.floor((t.t0-min)/step); if(idx>=n)idx=n-1; if(idx<0)idx=0;
+    const b=out[idx]; b.ins+=t.inserted; b.upd+=t.updated; b.del+=t.deleted;
+    if(t.size_known) b.bytes+=t.size_bytes; b.txns++;
+  }
+  return out;
+}
+
+const cv=$("#chart"), ctx=cv.getContext("2d");
+let plotL=54;            // left plot margin; recomputed from label widths in draw()
+const PAD_R=14, PAD_T=12, PAD_B=26;
+function draw(){
+  const dpr=window.devicePixelRatio||1;
+  const w=cv.clientWidth, h=cv.clientHeight;
+  cv.width=w*dpr; cv.height=h*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+
+  const bars=bucketize(viewMin,viewMax,BUCKETS);
+
+  let max=0;
+  for(const b of bars){
+    const v = mode==="rows" ? (b.ins+b.upd+b.del) : b.bytes;
+    if(v>max) max=v;
+  }
+  if(max<=0) max=1;
+
+  // Build the y-axis labels first, then size the left margin to fit the widest
+  // one (byte labels like "233.0 MiB" are far wider than the old fixed margin).
+  ctx.font="11px ui-monospace,monospace"; ctx.textBaseline="middle";
+  const labels=[];
+  for(let g=0;g<=4;g++){
+    const val=max*g/4;
+    labels.push(mode==="rows" ? fmtInt(Math.round(val)) : fmtBytes(val));
+  }
+  let labelW=0;
+  for(const l of labels) labelW=Math.max(labelW, ctx.measureText(l).width);
+  const padL = Math.max(48, Math.ceil(labelW)+14);
+  plotL = padL;
+  const padR=PAD_R, padT=PAD_T, padB=PAD_B;
+  const plotW=w-padL-padR, plotH=h-padT-padB;
+
+  // grid + y labels
+  ctx.strokeStyle="#1a2436"; ctx.fillStyle="#4a5670"; ctx.lineWidth=1;
+  for(let g=0;g<=4;g++){
+    const y=padT+plotH*(1-g/4);
+    ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(w-padR,y);ctx.stroke();
+    ctx.textAlign="right"; ctx.fillText(labels[g],padL-8,y);
+  }
+
+  const bw=plotW/bars.length;
+  layout=[];
+  for(let i=0;i<bars.length;i++){
+    const b=bars[i]; const x=padL+i*bw;
+    layout.push({x,w:bw,b});
+    if(mode==="rows"){
+      let y=padT+plotH;
+      const segs=[["#5fd38d",b.ins],["#f0c454",b.upd],["#f0697a",b.del]];
+      for(const [col,v] of segs){
+        const sh=plotH*(v/max);
+        ctx.fillStyle=col; ctx.fillRect(x+0.5,y-sh,Math.max(bw-1,0.5),sh);
+        y-=sh;
+      }
+    }else{
+      const sh=plotH*(b.bytes/max);
+      ctx.fillStyle="#9d7bff";
+      ctx.fillRect(x+0.5,padT+plotH-sh,Math.max(bw-1,0.5),sh);
+    }
+  }
+
+  // x labels
+  ctx.fillStyle="#4a5670"; ctx.textAlign="left";
+  ctx.fillText(fmtTime(viewMin),padL,h-12);
+  ctx.textAlign="center"; ctx.fillText(fmtTime((viewMin+viewMax)/2),padL+plotW/2,h-12);
+  ctx.textAlign="right"; ctx.fillText(fmtTime(viewMax),w-padR,h-12);
+
+  drawSelection();
+  $("#range").innerHTML = `viewing <b>${fmtDateTime(viewMin)}</b> → <b>${fmtDateTime(viewMax)}</b>`;
+}
+
+// ---- zoom selection ----
+let dragging=false, dragX0=0, dragX1=0;
+function plotBounds(){ return {l:plotL,r:cv.clientWidth-PAD_R}; }
+function xToTime(x){
+  const {l,r}=plotBounds(); const f=(x-l)/(r-l);
+  return viewMin+(viewMax-viewMin)*Math.max(0,Math.min(1,f));
+}
+function drawSelection(){
+  if(!dragging) return;
+  const x0=Math.min(dragX0,dragX1), x1=Math.max(dragX0,dragX1);
+  ctx.fillStyle="rgba(57,208,216,0.15)";
+  ctx.fillRect(x0,12,x1-x0,cv.clientHeight-38);
+  ctx.strokeStyle="#39d0d8"; ctx.lineWidth=1;
+  ctx.strokeRect(x0+0.5,12,x1-x0,cv.clientHeight-38);
+}
+function evX(e){ const r=cv.getBoundingClientRect(); return e.clientX-r.left; }
+
+cv.addEventListener("pointerdown",e=>{
+  dragging=true; dragX0=dragX1=evX(e); cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener("pointermove",e=>{
+  if(dragging){ dragX1=evX(e); draw(); }
+  else showTip(e);
+});
+cv.addEventListener("pointerup",e=>{
+  if(!dragging) return;
+  dragging=false;
+  const x0=Math.min(dragX0,dragX1), x1=Math.max(dragX0,dragX1);
+  if(x1-x0>6){
+    const a=xToTime(x0), b=xToTime(x1);
+    viewMin=a; viewMax=b; if(viewMax-viewMin<1000) viewMax=viewMin+1000;
+  }
+  draw(); renderTable();
+});
+cv.addEventListener("dblclick",()=>{ viewMin=fullMin; viewMax=fullMax; draw(); renderTable(); });
+cv.addEventListener("pointerleave",()=>{ $("#tip").style.opacity=0; });
+$("#reset").addEventListener("click",()=>{ viewMin=fullMin; viewMax=fullMax; draw(); renderTable(); });
+
+function showTip(e){
+  const x=evX(e); const hit=layout.find(L=>x>=L.x && x<L.x+L.w);
+  const tip=$("#tip");
+  if(!hit){ tip.style.opacity=0; return; }
+  const b=hit.b, rows=b.ins+b.upd+b.del;
+  tip.innerHTML=`<div class="ts">${fmtTime(b.s)} – ${fmtTime(b.e)}</div>`+
+    `<div class="ln">txns ${fmtInt(b.txns)}</div>`+
+    `<div class="ln">rows ${fmtInt(rows)} `+
+    `(<span class="ins">${fmtInt(b.ins)}</span>/`+
+    `<span class="upd">${fmtInt(b.upd)}</span>/`+
+    `<span class="del">${fmtInt(b.del)}</span>)</div>`+
+    `<div class="ln">size ${fmtBytes(b.bytes)}</div>`;
+  tip.style.opacity=1;
+  tip.style.left=Math.min(e.clientX+14,window.innerWidth-180)+"px";
+  tip.style.top=(e.clientY+14)+"px";
+}
+
+function setMode(m){
+  mode=m;
+  $("#mRows").classList.toggle("on",m==="rows");
+  $("#mBytes").classList.toggle("on",m==="bytes");
+  $("#legend").style.visibility = m==="rows" ? "visible":"hidden";
+  draw();
+}
+$("#mRows").addEventListener("click",()=>setMode("rows"));
+$("#mBytes").addEventListener("click",()=>setMode("bytes"));
+
+const SORT_ACC = {
+  time:   t => t.t0,
+  server: t => t.server_id,
+  id:     t => (t.gtid || (t.xid ? "xid "+t.xid : "")),
+  ins:    t => t.inserted,
+  upd:    t => t.updated,
+  del:    t => t.deleted,
+  ddl:    t => t.ddl_kind || "",
+  size:   t => (t.size_known ? t.size_bytes : -1),
+  tables: t => (t.tables||[]).join(", "),
+};
+let sortKey = "time", sortDir = 1;
+
+function renderTable(){
+  let inView=txns.filter(t=>t.t0>=viewMin && t.t0<=viewMax);
+  $("#txnCount").textContent=fmtInt(inView.length);
+  const body=$("#txnBody"), empty=$("#empty");
+  if(!inView.length){ body.innerHTML=""; empty.style.display="block"; updateSortIndicators(); return; }
+  empty.style.display="none";
+
+  const acc = SORT_ACC[sortKey] || SORT_ACC.time;
+  inView.sort((a,b)=>{
+    const x=acc(a), y=acc(b);
+    let c = (typeof x==="number" && typeof y==="number") ? x-y : String(x).localeCompare(String(y));
+    if(c===0) c = a.t0-b.t0;      // stable tiebreak by time
+    return c*sortDir;
+  });
+
+  const rowsHtml=inView.slice(0,2000).map(t=>{
+    const id = t.gtid ? `<span class="gtid">${t.gtid}</span>`
+              : (t.xid ? "xid "+t.xid : "");
+    const size = t.size_known ? fmtBytes(t.size_bytes) : "<span class=gtid>—</span>";
+    const tbls=(t.tables||[]).join(", ");
+    const ddl = t.ddl_kind ? `<span class="ddl-tag">${t.ddl_kind.toLowerCase()}</span>` : "";
+    return `<tr data-i="${t.index}">
+      <td>${fmtDateTime(t.t0)}</td>
+      <td>${t.server_id}</td>
+      <td>${id}</td>
+      <td class="num ins">${t.inserted||""}</td>
+      <td class="num upd">${t.updated||""}</td>
+      <td class="num del">${t.deleted||""}</td>
+      <td>${ddl}</td>
+      <td class="num">${size}</td>
+      <td class="tables" title="${tbls}">${tbls}</td>
+    </tr>`;
+  }).join("");
+  body.innerHTML=rowsHtml;
+  updateSortIndicators();
+}
+
+function updateSortIndicators(){
+  document.querySelectorAll(".tbl-wrap thead th[data-sort]").forEach(th=>{
+    const base = th.textContent.replace(/[ \u25B2\u25BC]+$/,"");
+    th.textContent = base + (th.dataset.sort===sortKey ? (sortDir>0?" \u25B2":" \u25BC") : "");
+    th.classList.toggle("sorted", th.dataset.sort===sortKey);
+  });
+}
+
+document.querySelectorAll(".tbl-wrap thead th[data-sort]").forEach(th=>{
+  th.addEventListener("click", ()=>{
+    const k=th.dataset.sort;
+    if(sortKey===k){ sortDir=-sortDir; }
+    else { sortKey=k; sortDir = (k==="time") ? 1 : -1; } // new column: numbers desc, time asc
+    renderTable();
+  });
+});
+
+// ---- transaction detail overlay ----
+function openModal(i){
+  const t = txnByIndex[i];
+  if(!t) return;
+  const rows = t.inserted+t.updated+t.deleted;
+  const idline = t.gtid ? `<span class="gtid">${t.gtid}</span>`
+               : (t.xid ? "xid "+t.xid : "—");
+  const tbls = (t.tables||[]);
+  const tblHtml = tbls.length
+    ? `<ul class="tlist">${tbls.map(x=>`<li>${x}</li>`).join("")}</ul>`
+    : `<div class="mv">—</div>`;
+  const kv = (k,v)=>`<div class="mk">${k}</div><div class="mv">${v}</div>`;
+  $("#modalBody").innerHTML =
+    `<div class="mgrid">`+
+    kv("gtid / xid", idline)+
+    kv("start", fmtDateTime(t.t0))+
+    kv("server id", t.server_id)+
+    kv("format", t.format||"—")+
+    (t.ddl_kind ? kv("ddl", `<span class="ddl-tag">${t.ddl_kind.toLowerCase()}</span>`) : "")+
+    kv("size", t.size_known ? fmtBytes(t.size_bytes) : "— (not measured)")+
+    kv("rows", `${fmtInt(rows)} `+
+      `(<span class="ins">${fmtInt(t.inserted)}</span> ins / `+
+      `<span class="upd">${fmtInt(t.updated)}</span> upd / `+
+      `<span class="del">${fmtInt(t.deleted)}</span> del)`)+
+    `</div>`+
+    `<div class="mk" style="margin-top:14px">tables (${tbls.length})</div>`+
+    tblHtml;
+  $("#modal").style.display="flex";
+}
+function closeModal(){ $("#modal").style.display="none"; }
+
+$("#txnBody").addEventListener("click", e=>{
+  const tr = e.target.closest("tr");
+  if(!tr || !tr.dataset.i) return;
+  openModal(+tr.dataset.i);
+});
+$("#modal").addEventListener("click", e=>{ if(e.target.id==="modal") closeModal(); });
+$("#modalClose").addEventListener("click", closeModal);
+window.addEventListener("keydown", e=>{ if(e.key==="Escape") closeModal(); });
+
+window.addEventListener("resize",draw);
+load();
+</script>
+</body>
+</html>
