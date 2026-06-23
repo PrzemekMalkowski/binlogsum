@@ -31,7 +31,7 @@ earth happened to this server between 10:00 and 10:05".
 ## Install
 
 ```sh
-git clone https://github.com/<you>/binlogsum.git
+git clone https://github.com/PrzemekMalkowski/binlogsum.git
 cd binlogsum
 go build -o binlogsum .
 # optionally: go install .
