@@ -15,7 +15,7 @@ static binary.
 ![binlogsum web UI](docs/preview.svg)
 
 > The image above is a schematic of the web UI. For a **live, interactive
-> example**, download [`docs/example-snapshot.html`](docs/example-snapshot.html)
+> example**, download [`docs/example-snapshot.html`](https://raw.githubusercontent.com/PrzemekMalkowski/binlogsum/refs/heads/main/docs/example-snapshot.html)
 > and open it in a browser — it is a self-contained snapshot produced by
 > `binlogsum --mode snapshot` (drag on the histogram to zoom, click a row for
 > details, sort the table columns).
