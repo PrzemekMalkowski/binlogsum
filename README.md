@@ -14,7 +14,7 @@ static binary.
 
 <table>
   <tr>
-    <td align="center"><img src="docs/screenshot.png" alt="screenshot" width="500" /></td>
+    <td align="center"><img src="docs/screenshot.png" alt="screenshot" width="800" /></td>
   </tr>
 </table>
 
