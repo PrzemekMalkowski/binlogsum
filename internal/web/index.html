@@ -134,6 +134,8 @@
     background:var(--panel2);border-bottom:1px solid var(--line);word-break:break-all}
   .tlist li:last-child{border-bottom:0}
   .tlist li:nth-child(odd){background:var(--bg)}
+  .qlist li{white-space:pre-wrap;word-break:break-word;color:var(--cyan)}
+  .reflist li{color:var(--mute)}
 
   .tip{position:fixed;pointer-events:none;background:#060a12;border:1px solid var(--line);
     border-radius:8px;padding:9px 11px;font-family:var(--mono);font-size:12px;
@@ -210,7 +212,7 @@
           <th class="num" data-sort="ins">ins</th>
           <th class="num" data-sort="upd">upd</th>
           <th class="num" data-sort="del">del</th>
-          <th data-sort="ddl">ddl</th>
+          <th data-sort="ddl">stmt</th>
           <th class="num" data-sort="size">size</th>
           <th data-sort="tables">tables</th>
         </tr></thead>
@@ -243,6 +245,8 @@ let layout = [];                        // per-bar pixel geometry for hit-testin
 
 const $ = s => document.querySelector(s);
 const fmtInt = n => n.toLocaleString("en-US");
+const escHtml = s => String(s).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function fmtBytes(b){
   if(b < 1024) return b + " B";
   const u=["KiB","MiB","GiB","TiB"]; let i=-1;
@@ -303,7 +307,7 @@ async function load(){
 
 function renderEvents(){
   const q=DATA.query_counts||{};
-  const order=["INSERT","UPDATE","DELETE","CREATE","ALTER","DROP","TRUNCATE","RENAME"];
+  const order=["INSERT","UPDATE","DELETE","CREATE","ALTER","DROP","TRUNCATE","RENAME","GRANT","REVOKE"];
   const colors={INSERT:"#5fd38d",UPDATE:"#f0c454",DELETE:"#f0697a"};
   const ddl="#9d7bff";
   let max=0; for(const k of order) if((q[k]||0)>max) max=q[k];
@@ -410,7 +414,7 @@ function renderStats(){
     stat("deletes", fmtInt(q.DELETE||0)),
   ];
   // DDL statement counts (only those that actually occur).
-  for(const k of ["CREATE","ALTER","DROP","TRUNCATE","RENAME"]){
+  for(const k of ["CREATE","ALTER","DROP","TRUNCATE","RENAME","GRANT","REVOKE"]){
     if(q[k]) boxes.push(stat(k.toLowerCase(), fmtInt(q[k])));
   }
   $("#stats").innerHTML = boxes.join("");
@@ -640,9 +644,19 @@ function openModal(i){
   const idline = t.gtid ? `<span class="gtid">${t.gtid}</span>`
                : (t.xid ? "xid "+t.xid : "—");
   const tbls = (t.tables||[]);
+  const refd = (t.tables_referenced||[]);
   const tblHtml = tbls.length
-    ? `<ul class="tlist">${tbls.map(x=>`<li>${x}</li>`).join("")}</ul>`
+    ? `<ul class="tlist">${tbls.map(x=>`<li>${escHtml(x)}</li>`).join("")}</ul>`
     : `<div class="mv">—</div>`;
+  const refHtml = refd.length
+    ? `<div class="mk" style="margin-top:14px">tables referenced (${refd.length})</div>`+
+      `<ul class="tlist reflist">${refd.map(x=>`<li>${escHtml(x)}</li>`).join("")}</ul>`
+    : "";
+  const queries = (t.queries||[]);
+  const qHtml = queries.length
+    ? `<div class="mk" style="margin-top:14px">query (${queries.length})</div>`+
+      `<ul class="tlist qlist">${queries.map(q=>`<li>${escHtml(q)}</li>`).join("")}</ul>`
+    : "";
   const kv = (k,v)=>`<div class="mk">${k}</div><div class="mv">${v}</div>`;
   $("#modalBody").innerHTML =
     `<div class="mgrid">`+
@@ -650,15 +664,17 @@ function openModal(i){
     kv("start", fmtDateTime(t.t0))+
     kv("server id", t.server_id)+
     kv("format", t.format||"—")+
-    (t.ddl_kind ? kv("ddl", `<span class="ddl-tag">${t.ddl_kind.toLowerCase()}</span>`) : "")+
+    (t.ddl_kind ? kv("statement", `<span class="ddl-tag">${escHtml(t.ddl_kind.toLowerCase())}</span>`) : "")+
     kv("size", t.size_known ? fmtBytes(t.size_bytes) : "— (not measured)")+
     kv("rows", `${fmtInt(rows)} `+
       `(<span class="ins">${fmtInt(t.inserted)}</span> ins / `+
       `<span class="upd">${fmtInt(t.updated)}</span> upd / `+
       `<span class="del">${fmtInt(t.deleted)}</span> del)`)+
     `</div>`+
-    `<div class="mk" style="margin-top:14px">tables (${tbls.length})</div>`+
-    tblHtml;
+    qHtml+
+    `<div class="mk" style="margin-top:14px">tables updated (${tbls.length})</div>`+
+    tblHtml+
+    refHtml;
   $("#modal").style.display="flex";
 }
 function closeModal(){ $("#modal").style.display="none"; }

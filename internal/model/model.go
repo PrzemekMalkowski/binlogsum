@@ -35,7 +35,7 @@ type Transaction struct {
 	EndPos    int64     `json:"end_pos"`
 	SizeBytes int64     `json:"size_bytes"` // valid only when SizeKnown
 	SizeKnown bool      `json:"size_known"` // false for STATEMENT-format txns
-	Format    string    `json:"format"`     // "ROW" or "STATEMENT"
+	Format    string    `json:"format"`     // "ROW", "STATEMENT", "DDL" or "DCL"
 	StartTime time.Time `json:"start_time"`
 	EndTime   time.Time `json:"end_time"`
 	Inserted  int       `json:"inserted"`
@@ -43,7 +43,9 @@ type Transaction struct {
 	Deleted   int       `json:"deleted"`
 	DDL       int       `json:"ddl,omitempty"`
 	DDLKind   string    `json:"ddl_kind,omitempty"`
-	Tables    []string  `json:"tables"`
+	Tables          []string `json:"tables"`                      // tables with actual row changes
+	TablesReferenced []string `json:"tables_referenced,omitempty"` // mapped via FK refs but unmodified
+	Queries         []string `json:"queries,omitempty"`           // original SQL (Rows_query / DDL / DCL)
 }
 
 // RowsChanged is the number of individual rows touched by the transaction.

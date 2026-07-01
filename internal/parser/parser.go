@@ -86,9 +86,10 @@ func Parse(r io.Reader, sourceName, toolVersion string) (*model.Summary, error) 
 // txnState carries both the public transaction and parser-only bookkeeping.
 type txnState struct {
 	txn        *model.Transaction
-	tables     map[string]bool
-	awaitStart bool // next "# at" sets StartPos
-	committed  bool // COMMIT/ROLLBACK seen; next "# at" closes it
+	tables     map[string]bool // tables actually modified (from "### " row images)
+	mapped     map[string]bool // every Table_map'd table (incl. FK-referenced)
+	awaitStart bool            // next "# at" sets StartPos
+	committed  bool            // COMMIT/ROLLBACK seen; next "# at" closes it
 	curTable   string
 }
 
@@ -108,6 +109,14 @@ type parserState struct {
 
 	gtidSeen []string
 	xids     []int64
+
+	tblKeyBuf []byte // reused scratch for building "db.tbl" keys
+
+	inRowsQuery  bool   // collecting a Rows_query event's "# <sql>" lines
+	rowsQueryBuf []byte // accumulates the current Rows_query text
+
+	capTxn *model.Transaction // statement txn (DDL/DCL) capturing its SQL, or nil
+	capBuf []byte             // accumulates a multi-line DDL/DCL statement
 }
 
 // line dispatches a single input line by its first byte. The ordering favours
@@ -117,7 +126,23 @@ func (p *parserState) line(b []byte) {
 	if len(b) == 0 {
 		return
 	}
+	// While collecting a Rows_query, its original SQL follows on one or more
+	// "# <sql>" lines. Consume those here; any other line shape ends the query
+	// and falls through to normal handling. ("# at " is an event boundary, not
+	// query text, so it is explicitly excluded.)
+	if p.inRowsQuery {
+		if len(b) >= 2 && b[0] == '#' && b[1] == ' ' && !hasPrefix(b, "# at ") {
+			p.appendRowsQuery(b)
+			return
+		}
+		p.endRowsQuery()
+	}
 	if b[0] == '#' {
+		// An event boundary ends any statement still being captured (normally
+		// the "/*!*/;" terminator already did).
+		if p.capTxn != nil {
+			p.finishStmtCapture()
+		}
 		// "### ..." — row-image pseudo-statements (by far the most common).
 		if len(b) >= 3 && b[1] == '#' && b[2] == '#' {
 			p.rowLine(b)
@@ -148,27 +173,142 @@ func (p *parserState) line(b []byte) {
 
 // rowLine handles the "### ..." family. Only the three statement-introducing
 // forms carry row counts; the "### SET/WHERE/@n=..." decoration is ignored.
+// The table a row change is attributed to is read from the statement line
+// itself ("### UPDATE `db`.`tbl`"), which is authoritative: a single
+// transaction routinely touches many tables, and the line names the exact one.
 func (p *parserState) rowLine(b []byte) {
 	switch {
 	case hasPrefix(b, "### INSERT INTO"):
+		p.sum.QueryCounts["INSERT"]++
 		if p.cur != nil {
 			p.cur.txn.Inserted++
-			p.stat(p.cur.curTable).Inserted++
+			p.imageStat(b).Inserted++
 		}
-		p.sum.QueryCounts["INSERT"]++
 	case hasPrefix(b, "### UPDATE"):
+		p.sum.QueryCounts["UPDATE"]++
 		if p.cur != nil {
 			p.cur.txn.Updated++
-			p.stat(p.cur.curTable).Updated++
+			p.imageStat(b).Updated++
 		}
-		p.sum.QueryCounts["UPDATE"]++
 	case hasPrefix(b, "### DELETE FROM"):
+		p.sum.QueryCounts["DELETE"]++
 		if p.cur != nil {
 			p.cur.txn.Deleted++
-			p.stat(p.cur.curTable).Deleted++
+			p.imageStat(b).Deleted++
 		}
-		p.sum.QueryCounts["DELETE"]++
 	}
+}
+
+// imageStat returns the aggregate record for the table named on a row-image
+// statement line, creating it on first use and recording it on the current
+// transaction's table set. It falls back to the table-map-derived curTable when
+// the line carries no parseable name (so unusual lines are still counted, under
+// "(unknown)" at worst). The hot path performs no allocation for tables already
+// seen: the "db.tbl" key is built in a reused buffer and looked up via the
+// compiler's allocation-free map[string([]byte)] special case.
+func (p *parserState) imageStat(b []byte) *model.TableStat {
+	db, tbl, ok := imageTable(b)
+	if !ok {
+		// No parseable name on the line: fall back to the table-map-derived
+		// curTable, and record it on the transaction's table set (the row-event
+		// path no longer marks tables).
+		if p.cur.curTable != "" {
+			p.markTable(p.cur.curTable)
+		}
+		return p.stat(p.cur.curTable)
+	}
+
+	buf := p.tblKeyBuf[:0]
+	if len(db) == 0 && p.currentDB != "" {
+		buf = append(buf, p.currentDB...)
+	} else {
+		buf = append(buf, db...)
+	}
+	if len(buf) > 0 {
+		buf = append(buf, '.')
+	}
+	buf = append(buf, tbl...)
+	p.tblKeyBuf = buf
+
+	s := p.tableStat[string(buf)] // allocation-free lookup
+	if s == nil {
+		key := string(buf) // allocate once, when the table is first seen
+		s = &model.TableStat{Table: key}
+		p.tableStat[key] = s
+	}
+	// Keep the transaction's table set consistent with what actually changed.
+	if !p.cur.tables[string(buf)] {
+		p.cur.tables[s.Table] = true
+	}
+	return s
+}
+
+// imageTable extracts the database and table from a row-image statement line
+// such as "### UPDATE `db`.`tbl`" or "### INSERT INTO `tbl`". db is nil when the
+// name is unqualified. It mirrors parseTableMap's backtick scanning and shares
+// its limitation around identifiers containing escaped backticks (not produced
+// for ordinary table names).
+func imageTable(b []byte) (db, tbl []byte, ok bool) {
+	a := bytes.IndexByte(b, '`')
+	if a < 0 {
+		return nil, nil, false
+	}
+	rel := bytes.IndexByte(b[a+1:], '`')
+	if rel < 0 {
+		return nil, nil, false
+	}
+	end1 := a + 1 + rel
+	first := b[a+1 : end1]
+
+	rest := b[end1+1:]
+	if len(rest) > 0 && rest[0] == '.' {
+		c := bytes.IndexByte(rest, '`')
+		if c >= 0 {
+			if r2 := bytes.IndexByte(rest[c+1:], '`'); r2 >= 0 {
+				return first, rest[c+1 : c+1+r2], true // db, tbl
+			}
+		}
+	}
+	return nil, first, true // unqualified: table only
+}
+
+// appendRowsQuery adds a "# <sql>" continuation line to the in-progress
+// Rows_query, stripping the leading "# " and joining multiple lines with "\n".
+func (p *parserState) appendRowsQuery(b []byte) {
+	q := stripHashSpace(b)
+	if len(p.rowsQueryBuf) > 0 {
+		p.rowsQueryBuf = append(p.rowsQueryBuf, '\n')
+	}
+	p.rowsQueryBuf = append(p.rowsQueryBuf, q...)
+}
+
+// endRowsQuery finalises a collected Rows_query, attaching it to the current
+// transaction (one entry per statement). It is safe to call when no query is
+// being collected.
+func (p *parserState) endRowsQuery() {
+	if !p.inRowsQuery {
+		return
+	}
+	p.inRowsQuery = false
+	if len(p.rowsQueryBuf) == 0 {
+		return
+	}
+	q := string(p.rowsQueryBuf)
+	p.rowsQueryBuf = p.rowsQueryBuf[:0]
+	if p.cur != nil {
+		p.cur.txn.Queries = append(p.cur.txn.Queries, q)
+	}
+}
+
+// stripHashSpace drops a leading "# " (or just "#") from a comment line.
+func stripHashSpace(b []byte) []byte {
+	if len(b) > 0 && b[0] == '#' {
+		b = b[1:]
+	}
+	if len(b) > 0 && b[0] == ' ' {
+		b = b[1:]
+	}
+	return b
 }
 
 // eventHeader hand-scans a header line of the form:
@@ -224,23 +364,33 @@ func (p *parserState) eventHeader(b []byte) {
 func (p *parserState) dispatchDesc(desc []byte) {
 	switch {
 	case hasPrefix(desc, "Table_map:"):
+		// Record the id -> table mapping. Do NOT add it to the modified-tables
+		// set: since MySQL 9.7 (USE_SQL_FOREIGN_KEY_F) a transaction emits a
+		// Table_map for every FK-referenced table even when no row in it changes.
+		// The modified set is built from actual row images (see imageStat); the
+		// full mapped set is kept separately so referenced-only tables can be
+		// reported apart from updated ones.
 		if full, num, ok := parseTableMap(desc); ok {
 			p.tableMap[num] = full
 			if p.cur != nil {
-				p.markTable(full)
+				p.cur.mapped[full] = true
 			}
 		}
 	case hasPrefix(desc, "Write_rows"),
 		hasPrefix(desc, "Update_rows"),
 		hasPrefix(desc, "Delete_rows"):
+		// curTable is only a fallback for row-image lines that carry no parseable
+		// table name; the table set and per-table stats come from the "### " line.
 		num := parseTableID(desc)
 		if p.cur != nil {
 			p.cur.txn.Format = "ROW"
 			p.cur.curTable = p.tableMap[num]
-			if p.cur.curTable != "" {
-				p.markTable(p.cur.curTable)
-			}
 		}
+	case hasPrefix(desc, "Rows_query"):
+		// binlog_rows_query_log_events: the original SQL follows on the next
+		// "# <sql>" line(s); line() collects it into the current transaction.
+		p.inRowsQuery = true
+		p.rowsQueryBuf = p.rowsQueryBuf[:0]
 	case hasPrefix(desc, "Xid ="):
 		x := int64(atoiLeading(bytes.TrimSpace(desc[len("Xid ="):])))
 		p.xids = append(p.xids, x)
@@ -268,6 +418,19 @@ func (p *parserState) dispatchDesc(desc []byte) {
 
 // payload handles non-"#" lines: SQL statements and session settings.
 func (p *parserState) payload(b []byte) {
+	// If a DDL/DCL statement is being captured, accumulate its text until the
+	// "/*!*/;" terminator. (SET/use directives precede the statement, so they
+	// never reach here mid-capture.)
+	if p.capTxn != nil {
+		if hasPrefix(b, "/*!*/;") {
+			p.finishStmtCapture()
+			return
+		}
+		p.capBuf = append(p.capBuf, '\n')
+		p.capBuf = append(p.capBuf, b...)
+		return
+	}
+
 	switch b[0] {
 	case 'S':
 		if hasPrefix(b, "SET @@SESSION.GTID_NEXT") {
@@ -300,28 +463,38 @@ func (p *parserState) payload(b []byte) {
 		}
 	}
 
-	// Standalone DDL (outside a BEGIN/COMMIT) — STATEMENT format. Reached for a
-	// non-COMMIT 'C' (CREATE) or non-ROLLBACK 'R' (RENAME) too, via fallthrough.
+	// Standalone statement (outside a BEGIN/COMMIT) — STATEMENT format. Reached
+	// for a non-COMMIT 'C' (CREATE) or non-ROLLBACK 'R' (RENAME/REVOKE) too, via
+	// fallthrough. DDL and DCL are each recorded as their own transaction and
+	// have their original SQL captured.
 	if p.cur == nil {
 		if kw, ok := leadingDDL(b); ok {
 			p.sum.QueryCounts[kw]++
 			table := p.recordDDLTable(b, kw)
-			p.addDDLTxn(kw, table)
+			t := p.addStmtTxn(kw, "DDL", table)
+			p.startStmtCapture(t, b)
+		} else if kw, ok := leadingDCL(b); ok {
+			p.sum.QueryCounts[kw]++
+			t := p.addStmtTxn(kw, "DCL", "")
+			p.startStmtCapture(t, b)
 		}
 	}
 }
 
-// addDDLTxn records a standalone DDL statement as its own transaction entry so
-// it is visible (and sortable) alongside DML in the per-transaction views. In
-// the binlog each such statement is auto-committed under its own GTID.
-func (p *parserState) addDDLTxn(kind, table string) {
+// addStmtTxn records a standalone statement (DDL or DCL) as its own transaction
+// entry so it is visible (and sortable) alongside DML in the per-transaction
+// views. In the binlog each such statement is auto-committed under its own GTID.
+// class is "DDL" or "DCL" (stored in Format); only DDL sets the DDL flag.
+func (p *parserState) addStmtTxn(kind, class, table string) *model.Transaction {
 	t := &model.Transaction{
 		Index:    p.txnIndex,
 		ServerID: p.curServerID,
-		Format:   "DDL",
+		Format:   class,
 		GTID:     p.pendingGTID,
-		DDL:      1,
 		DDLKind:  kind,
+	}
+	if class == "DDL" {
+		t.DDL = 1
 	}
 	if p.curTimeOK {
 		t.StartTime = p.curTime
@@ -333,6 +506,27 @@ func (p *parserState) addDDLTxn(kind, table string) {
 	p.txnIndex++
 	p.pendingGTID = ""
 	p.sum.Transactions = append(p.sum.Transactions, t)
+	return t
+}
+
+// startStmtCapture begins accumulating a statement's SQL, seeded with its first
+// line. Continuation lines are appended in payload until the "/*!*/;" terminator.
+func (p *parserState) startStmtCapture(t *model.Transaction, firstLine []byte) {
+	p.capTxn = t
+	p.capBuf = append(p.capBuf[:0], firstLine...)
+}
+
+// finishStmtCapture attaches the accumulated SQL to the statement transaction.
+// Safe to call when no capture is active (e.g. at an event boundary or EOF).
+func (p *parserState) finishStmtCapture() {
+	if p.capTxn == nil {
+		return
+	}
+	if len(p.capBuf) > 0 {
+		p.capTxn.Queries = append(p.capTxn.Queries, string(p.capBuf))
+	}
+	p.capBuf = p.capBuf[:0]
+	p.capTxn = nil
 }
 
 func (p *parserState) commitTxn() {
@@ -353,6 +547,7 @@ func (p *parserState) beginTxn() {
 			GTID:     p.pendingGTID,
 		},
 		tables:     map[string]bool{},
+		mapped:     map[string]bool{},
 		awaitStart: true,
 	}
 	if p.curTimeOK {
@@ -372,8 +567,28 @@ func (p *parserState) closeTxn(pos int64) {
 		t.SizeKnown = true
 	}
 	t.Tables = sortedKeys(p.cur.tables)
+	t.TablesReferenced = referencedKeys(p.cur.mapped, p.cur.tables)
 	p.sum.Transactions = append(p.sum.Transactions, t)
 	p.cur = nil
+}
+
+// referencedKeys returns the sorted tables that were Table_map'd but not among
+// the modified set (i.e. present only because of FK references).
+func referencedKeys(mapped, modified map[string]bool) []string {
+	if len(mapped) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(mapped))
+	for k := range mapped {
+		if !modified[k] {
+			out = append(out, k)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (p *parserState) markTable(full string) {
@@ -417,12 +632,16 @@ func (p *parserState) recordDDLTable(b []byte, kind string) string {
 }
 
 func (p *parserState) finish() {
+	// Flush anything still being collected at EOF before closing out.
+	p.endRowsQuery()
+	p.finishStmtCapture()
 	// An unterminated transaction at EOF is still worth reporting.
 	if p.cur != nil {
 		if p.cur.txn.EndPos == 0 {
 			p.cur.txn.EndPos = p.lastAt
 		}
 		p.cur.txn.Tables = sortedKeys(p.cur.tables)
+		p.cur.txn.TablesReferenced = referencedKeys(p.cur.mapped, p.cur.tables)
 		p.sum.Transactions = append(p.sum.Transactions, p.cur.txn)
 		p.cur = nil
 	}
@@ -573,7 +792,23 @@ var ddlKeywords = []string{"CREATE", "ALTER", "DROP", "TRUNCATE", "RENAME"}
 // leadingDDL reports whether b begins with a DDL keyword (case-insensitive),
 // returning the canonical upper-case keyword.
 func leadingDDL(b []byte) (string, bool) {
-	for _, kw := range ddlKeywords {
+	return leadingKeyword(b, ddlKeywords)
+}
+
+// dclKeywords are the data-control statements surfaced as their own entries.
+// (CREATE/ALTER/DROP USER begin with DDL keywords and are handled there.)
+var dclKeywords = []string{"GRANT", "REVOKE"}
+
+// leadingDCL reports whether b begins with a DCL keyword (case-insensitive),
+// returning the canonical upper-case keyword.
+func leadingDCL(b []byte) (string, bool) {
+	return leadingKeyword(b, dclKeywords)
+}
+
+// leadingKeyword reports whether b begins with one of the given upper-case
+// keywords (case-insensitive), bounded by whitespace or end of line.
+func leadingKeyword(b []byte, keywords []string) (string, bool) {
+	for _, kw := range keywords {
 		if len(b) >= len(kw) && equalFoldPrefix(b, kw) {
 			if len(b) == len(kw) || b[len(kw)] == ' ' || b[len(kw)] == '\t' {
 				return kw, true

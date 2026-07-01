@@ -12,9 +12,13 @@ interactive web UI.
 It is pure Go standard library: no third-party modules, builds offline, single
 static binary.
 
-![binlogsum web UI](docs/preview.svg)
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshot.png" alt="screenshot" width="500" /></td>
+  </tr>
+</table>
 
-> The image above is a schematic of the web UI. For a **live, interactive
+> The image above is an example view of the web UI. For a **live, interactive
 > example**, download [`docs/example-snapshot.html`](docs/example-snapshot.html)
 > and open it in a browser — it is a self-contained snapshot produced by
 > `binlogsum --mode snapshot` (drag on the histogram to zoom, click a row for
@@ -56,6 +60,10 @@ Works with **ROW** format (both `binlog_row_image=FULL` and `MINIMAL`) and with
 **STATEMENT** format. For STATEMENT-format transactions, per-transaction byte
 size is not measured (there are no row images to bound it).
 
+> **Tip:** enable `binlog_rows_query_log_events` on the server to have the
+> original SQL of each row-based statement recorded alongside the row images;
+> `binlogsum` will then show it in the transaction detail.
+
 ### Modes
 
 ```sh
@@ -66,7 +74,8 @@ binlogsum --mode snapshot --out report.html    # self-contained interactive HTML
 
 - **text** — a one-shot colored report with a Unicode-block histogram.
 - **web** — serves an interactive UI: drag on the histogram to zoom to a time
-  window, toggle rows vs size, click a transaction for full details, sort the
+  window, toggle rows vs size, click a transaction for full details (updated vs.
+  referenced tables, and the original SQL when available), sort the
   per-table and per-transaction columns, and download a snapshot.
 - **snapshot** — writes the entire interactive UI with the data embedded into a
   single HTML file (no server needed) — good for attaching an analysis to a
@@ -91,7 +100,7 @@ binlogsum --mode snapshot --out report.html    # self-contained interactive HTML
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- binlogsum 0.1.0   source: stdin
+ binlogsum 0.2.0   source: stdin
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   time frame       2026-06-22 23:12:01  →  2026-06-22 23:14:01  (2m 0s)
   server           MySQL 8.4.7-7
@@ -143,13 +152,29 @@ binlogsum --mode snapshot --out report.html    # self-contained interactive HTML
 
 Header / overview: time frame, server flavor and version, event count per
 `server_id`, GTID range, Xid range, total events and a per-query-type tally
-(INSERT / UPDATE / DELETE / CREATE / ALTER / DROP / TRUNCATE / RENAME), and the
-most-updated tables sorted by rows changed.
+(INSERT / UPDATE / DELETE / CREATE / ALTER / DROP / TRUNCATE / RENAME, plus the
+DCL statements GRANT / REVOKE), and the most-updated tables sorted by rows
+changed.
 
 Per transaction: byte size (delta between the `# at` position after `BEGIN` and
-after `COMMIT`), tables involved, rows inserted/updated/deleted, DDL kind and
-table, and timestamps. DDL statements are surfaced as their own entries so they
-are searchable in the web UI.
+after `COMMIT`), the tables it modified and — separately — any tables it only
+*referenced*, rows inserted/updated/deleted, statement kind and table, the
+original SQL when available, and timestamps. DDL and DCL statements are surfaced
+as their own entries so they are searchable in the web UI.
+
+**Tables updated vs. referenced.** Since MySQL 9.7 (`USE_SQL_FOREIGN_KEY_F`) a
+transaction emits a `Table_map` for every foreign-key-referenced table even when
+no row in it changes. `binlogsum` attributes each row change to the table named
+on its own `### INSERT/UPDATE/DELETE` line, so it lists only the tables that were
+actually written under **tables updated**, and reports the merely-referenced ones
+under **tables referenced** — a single-row write no longer looks like a
+seven-table transaction.
+
+**Original query.** With `binlog_rows_query_log_events` enabled, the original SQL
+of each row-based statement (logged as a `Rows_query` event) is attached to its
+transaction and shown in the web UI's transaction detail. DDL and DCL statements
+(e.g. `ALTER`, `CREATE`, `GRANT`, `REVOKE`) carry their statement text the same
+way.
 
 ## Build & test
 
